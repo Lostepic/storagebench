@@ -2,7 +2,7 @@
 
 A single Bash script for benchmarking Linux disks, VPS storage and mounted filesystems with [fio](https://fio.readthedocs.io/en/latest/fio_doc.html). Measures sequential throughput, 4K random IOPS, mixed reads/writes and fsync latency. Saves readable TSV summaries and full JSON results.
 
-**Publication pending:** replace `OWNER` below with the GitHub account hosting this repository. The download command will work after publication.
+[![Check and benchmark](https://github.com/Lostepic/storagebench/actions/workflows/ci.yml/badge.svg)](https://github.com/Lostepic/storagebench/actions/workflows/ci.yml)
 
 ## Quick start
 
@@ -15,7 +15,7 @@ sudo apt-get update && sudo apt-get install -y fio jq
 One-line runner (downloads completely before executing; needs Bash and curl):
 
 ```bash
-bash -c 'set -e; f=$(mktemp); trap '\''rm -f -- "$f"'\'' EXIT; curl -fsSL https://raw.githubusercontent.com/OWNER/storagebench/main/storagebench.sh -o "$f"; bash "$f" --profile quick --yes'
+bash -c 'set -e; f=$(mktemp); trap '\''rm -f -- "$f"'\'' EXIT; curl -fsSL https://raw.githubusercontent.com/Lostepic/storagebench/main/storagebench.sh -o "$f"; bash "$f" --profile quick --yes'
 ```
 
 This benchmarks the **current directory's filesystem**. It does not need root when that directory is writable. The command executes the current `main` branch; review the script first or substitute a reviewed commit SHA for `main` to pin a specific version.
@@ -23,7 +23,7 @@ This benchmarks the **current directory's filesystem**. It does not need root wh
 To inspect before running:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/OWNER/storagebench/main/storagebench.sh
+curl -fsSLO https://raw.githubusercontent.com/Lostepic/storagebench/main/storagebench.sh
 less storagebench.sh
 bash storagebench.sh --profile quick
 ```
