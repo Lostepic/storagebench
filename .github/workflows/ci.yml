@@ -16,3 +16,7 @@ jobs:
           bash tests/cli.sh
       - name: Filesystem benchmark and failure cleanup
         run: bash tests/integration.sh
+      - name: Interactive picker, OS selection and cancellation
+        run: sudo python3 tests/interactive.py
+      - name: Unmounted read-only disposable device
+        run: sudo bash tests/unmounted.sh

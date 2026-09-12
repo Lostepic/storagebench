@@ -15,10 +15,10 @@ sudo apt-get update && sudo apt-get install -y fio jq
 One-line runner (downloads completely before executing; needs Bash and curl):
 
 ```bash
-bash -c 'set -e; f=$(mktemp); trap '\''rm -f -- "$f"'\'' EXIT; curl -fsSL https://raw.githubusercontent.com/Lostepic/storagebench/main/storagebench.sh -o "$f"; bash "$f" --profile quick --yes'
+bash -c 'set -e; f=$(mktemp); trap '\''rm -f -- "$f"'\'' EXIT; curl -fsSL https://raw.githubusercontent.com/Lostepic/storagebench/main/storagebench.sh -o "$f"; bash "$f" --profile quick'
 ```
 
-This benchmarks the **current directory's filesystem**. It does not need root when that directory is writable. The command executes the current `main` branch; review the script first or substitute a reviewed commit SHA for `main` to pin a specific version.
+This opens an **interactive target picker**, then asks for confirmation. Choose the current directory, OS/root filesystem, another mounted filesystem, a custom directory, or a block device. File tests do not need root when the chosen directory is writable; testing `/` or a raw device usually requires running the downloaded script with `sudo`. Prompts use `/dev/tty`, so they also work when the script is downloaded through a pipe. The command executes the current `main` branch; review the script first or substitute a reviewed commit SHA for `main` to pin a specific version.
 
 To inspect before running:
 
@@ -31,6 +31,9 @@ bash storagebench.sh --profile quick
 ## Usage
 
 ```bash
+# Interactive target picker, including OS and unmounted disks
+sudo bash storagebench.sh
+
 # Benchmark an existing mounted filesystem
 bash storagebench.sh --directory /mnt/data --profile standard
 
@@ -45,6 +48,18 @@ sudo bash storagebench.sh --install-deps --directory /mnt/data
 
 bash storagebench.sh --help
 ```
+
+| Target | How it is tested |
+| --- | --- |
+| Disk used by the running OS | Choose OS/root or a writable directory on that filesystem; read/write tests use a temporary file |
+| Other mounted filesystem | Choose its mount from the menu or use `--directory` |
+| Unmounted disk or partition | Choose its device from the menu or use `--read-only`; raw reads require no mount |
+| Blank disk with no filesystem | Read-only device tests work without formatting |
+| Existing unmounted filesystem needing write tests | Mount it yourself, then select its mounted directory |
+
+Device entries always run read-only, even if the device is currently mounted. Filesystem entries run read/write tests. The picker never guesses which physical disk contains the OS, so LVM/RAID-backed root filesystems can be tested through `/` as well. Mounted filesystem entries show the source and filesystem type; device entries show size and type. A final confirmation shows the selected target and workload.
+
+For unattended use, specify exactly one of `--directory` or `--read-only` and add `--yes`. Bare `--yes` is rejected to prevent accidentally testing an unintended filesystem. Without a controlling terminal, the script requires these explicit options.
 
 Linux, Bash 4+, fio 3.x, jq, GNU coreutils and util-linux are required. Other Linux distributions can install these with their package manager. The target must support fio's direct I/O with libaio; unsupported filesystems fail with logs rather than silently switching to cached I/O. macOS and native Windows are not supported.
 
@@ -83,13 +98,13 @@ A nonzero exit indicates failure or interruption; partial logs remain. Results s
 
 Filesystem mode only writes `workload.bin` inside its unique `.storagebench-*` directory and removes it on normal exit, errors, Ctrl+C and termination. An uncatchable kill or power loss can leave that directory behind. Remove it manually only after confirming no benchmark is still using it. Paths containing colons, backslashes or newlines are rejected because fio treats some characters specially.
 
-There is no partitioning, formatting, mounting, raw-write or destructive mode. Read-only device tests use fio's `--readonly` guard and disable file creation. Results are still written to the output filesystem, even in read-only mode. Disk selection uses an explicit device path, or an explicit/current filesystem directory; no root-disk inference is required.
+There is no partitioning, formatting, mounting, raw-write or destructive mode. Read-only device tests use fio's `--readonly` guard and disable file creation. Results are still written to the output filesystem, even in read-only mode. Target selection uses the interactive picker or explicit command-line options; no root-disk inference is required.
 
 Benchmarks consume I/O bandwidth and filesystem tests write data. Run during a maintenance window on busy systems. Free-space checks cannot reserve space against concurrent writers or account for all quotas/thin-provisioning limits. Direct I/O bypasses the usual page cache where supported, but controller caches, virtualization, compression and storage tiers still influence results. These are workload measurements, not hardware health checks or full-device steady-state endurance tests.
 
 ## Changes from the original script
 
-Version 2 replaces the interactive disk-discovery/destructive workflow with filesystem and raw read-only modes. It removes automatic package installation, cached `dd`/`hdparm` measurements, and formatting commands. It adds explicit options, opt-in dependency installation, machine-readable reporting, initialized read workloads and reliable cleanup. This avoids reliance on single-disk root detection, which does not cover every LVM/RAID layout.
+Version 2 replaces the destructive workflow with filesystem and raw read-only modes. It removes automatic package installation, cached `dd`/`hdparm` measurements, and formatting commands. It adds explicit options, opt-in dependency installation, machine-readable reporting, initialized read workloads and reliable cleanup. Version 2.1 adds interactive target discovery, OS filesystem selection, unmounted device selection and terminal-based prompts. This avoids reliance on single-disk root detection, which does not cover every LVM/RAID layout.
 
 ## Development
 
@@ -99,7 +114,7 @@ shellcheck storagebench.sh tests/*.sh
 bash tests/cli.sh
 ```
 
-CI runs these checks and a real quick-profile filesystem benchmark on an Ubuntu runner. It checks cleanup and fio results. No CI job targets a raw device. See [CONTRIBUTING.md](CONTRIBUTING.md).
+CI runs these checks and a real quick-profile filesystem benchmark on an Ubuntu runner. It checks cleanup, fio results, interactive prompts, OS selection/cancellation and a read-only benchmark against a disposable loop device. It never benchmarks a host's physical raw disk. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

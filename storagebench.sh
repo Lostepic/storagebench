@@ -2,15 +2,16 @@
 # SPDX-License-Identifier: MIT
 set -Eeuo pipefail
 export LC_ALL=C
-VERSION=2.0.0
+VERSION=2.1.0
 PROFILE=standard TARGET=. DEVICE='' OUTPUT=./storagebench-results
 TESTDIR='' RUN_DIR='' YES=0 INSTALL=0
+TARGET_SET=0 DEVICE_SET=0 PROMPT_OPEN=0
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 usage() {
     cat <<'EOF'
 StorageBench — Linux storage benchmarks using fio
 Usage: bash storagebench.sh [options]
-  --directory PATH     Filesystem to test (default: current directory)
+  --directory PATH     Filesystem to test (otherwise opens a target picker)
   --read-only DEVICE   Read-only block-device tests; requires root
   --profile NAME       quick (2 GiB/10s), standard (4 GiB/30s),
                        extended (8 GiB/60s)
@@ -22,6 +23,69 @@ Usage: bash storagebench.sh [options]
 Writes only to a unique temporary directory in filesystem mode.
 Never formats, partitions, mounts, or writes directly to block devices.
 EOF
+}
+prompt() {
+    if (( ! PROMPT_OPEN )); then
+        if { exec 3<>/dev/tty; } 2>/dev/null; then
+            PROMPT_OPEN=1
+        else
+            die 'No terminal available. Specify --directory PATH or --read-only DEVICE together with --yes.'
+        fi
+    fi
+    printf '%s' "$1" >&3
+    IFS= read -r -u 3 ANSWER || die 'Input ended before a selection was made.'
+}
+pick_target() {
+    local data row path source fs opts size type n i
+    local -a targets=("$PWD" /) modes=(filesystem filesystem) labels=("Current directory: $PWD" 'OS/root filesystem: / (temporary-file read/write tests)')
+    data=$(findmnt --json --list --output TARGET,SOURCE,FSTYPE,OPTIONS) || die 'Unable to list mounted filesystems.'
+    while IFS= read -r row; do
+        path=$(jq -r '.target' <<< "$row")
+        source=$(jq -r '.source' <<< "$row")
+        fs=$(jq -r '.fstype' <<< "$row")
+        opts=$(jq -r '.options' <<< "$row")
+        [[ "$path" != / && "$source" == /dev/* && ",$opts," == *,rw,* ]] || continue
+        targets+=("$path"); modes+=(filesystem)
+        labels+=("Mounted: $path [$source, $fs] — temporary-file read/write tests")
+    done < <(jq -c '.filesystems[]' <<< "$data")
+    data=$(lsblk --json --bytes --paths --output NAME,TYPE,SIZE,FSTYPE,MOUNTPOINTS) || die 'Unable to list block devices.'
+    while IFS= read -r row; do
+        path=$(jq -r '.name' <<< "$row")
+        type=$(jq -r '.type' <<< "$row")
+        size=$(jq -r '.size' <<< "$row")
+        fs=$(jq -r '.fstype // "no filesystem detected"' <<< "$row")
+        targets+=("$path"); modes+=(raw-readonly)
+        labels+=("Device: $path [$type, $(numfmt --to=iec "$size"), $fs] — READ ONLY (mounted or unmounted)")
+    done < <(jq -c '[.blockdevices[] | recurse(.children[]?) | select(.type != "rom")] | unique_by(.name)[]' <<< "$data")
+    printf '\nWhere should StorageBench run?\n\n'
+    for i in "${!targets[@]}"; do printf '  %s) %s\n' "$((i + 1))" "${labels[$i]}"; done
+    printf '\n  c) Enter a directory manually\n  q) Quit\n\n'
+    echo 'OS and mounted filesystem tests write only a temporary file.'
+    echo 'Unmounted/blank disks can be tested read-only without mounting or formatting.'
+    echo 'For write tests on an unmounted filesystem, mount it yourself, then choose its directory.'
+    while :; do
+        prompt 'Select target [1]: '
+        case "$ANSWER" in
+            q|Q) exit 0 ;;
+            c|C)
+                prompt 'Existing directory path: '
+                TARGET=$ANSWER
+                return ;;
+            '') ANSWER=1 ;;
+        esac
+        if [[ "$ANSWER" =~ ^[0-9]{1,6}$ ]]; then
+            n=$((10#$ANSWER))
+            if (( n >= 1 && n <= ${#targets[@]} )); then
+                if [[ "${modes[$((n - 1))]}" == filesystem ]]; then
+                    TARGET=${targets[$((n - 1))]}
+                else
+                    DEVICE=${targets[$((n - 1))]}
+                fi
+                return
+            fi
+        fi
+        echo 'Choose a listed number, c, or q.'
+    done
 }
 cleanup() {
     local rc=$?
@@ -39,8 +103,8 @@ cleanup() {
 value() { [[ $# -ge 2 && -n "$2" ]] || die "Missing value for $1"; }
 while (( $# )); do
     case "$1" in
-        --directory) value "$@"; TARGET=$2; shift 2 ;;
-        --read-only) value "$@"; DEVICE=$2; shift 2 ;;
+        --directory) value "$@"; TARGET=$2; TARGET_SET=1; shift 2 ;;
+        --read-only) value "$@"; DEVICE=$2; DEVICE_SET=1; shift 2 ;;
         --output) value "$@"; OUTPUT=$2; shift 2 ;;
         --profile) value "$@"; PROFILE=$2; shift 2 ;;
         --yes) YES=1; shift ;;
@@ -50,6 +114,8 @@ while (( $# )); do
         *) die "Unknown option: $1 (see --help)" ;;
     esac
 done
+(( ! TARGET_SET || ! DEVICE_SET )) || die 'Choose either --directory or --read-only, not both.'
+(( ! YES || TARGET_SET || DEVICE_SET )) || die '--yes requires an explicit --directory or --read-only target.'
 case "$PROFILE" in
     quick) GIB=2; RUNTIME=10 ;;
     standard) GIB=4; RUNTIME=30 ;;
@@ -63,10 +129,11 @@ if (( INSTALL )); then
     apt-get update
     DEBIAN_FRONTEND=noninteractive apt-get install -y fio jq
 fi
-for cmd in fio jq findmnt df mktemp realpath; do
+for cmd in fio jq findmnt lsblk numfmt blockdev df mktemp realpath; do
     command -v "$cmd" >/dev/null || die "Missing $cmd. On Debian/Ubuntu: sudo apt-get install fio jq util-linux coreutils"
 done
 [[ $(fio --version) == fio-* ]] || die 'fio must be the Flexible I/O Tester, not the Fiona CLI.'
+if (( ! TARGET_SET && ! DEVICE_SET )); then pick_target; fi
 SIZE=$((GIB * 1024 * 1024 * 1024))
 MODE=filesystem
 if [[ -n "$DEVICE" ]]; then
@@ -94,9 +161,8 @@ else
     echo 'Device I/O is read-only. Result files are still written to the output directory.'
 fi
 if (( ! YES )); then
-    [[ -t 0 ]] || die 'Non-interactive execution requires --yes.'
-    read -r -p 'Run benchmark? [y/N] ' answer
-    [[ "$answer" == y || "$answer" == Y ]] || exit 0
+    prompt 'Run benchmark? [y/N] '
+    [[ "$ANSWER" == y || "$ANSWER" == Y ]] || exit 0
 fi
 umask 077
 trap cleanup EXIT
