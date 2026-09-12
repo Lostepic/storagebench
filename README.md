@@ -47,6 +47,12 @@ sudo bash storagebench.sh --read-only /dev/nvme0n1 --profile quick
 sudo bash storagebench.sh --install-deps --directory /mnt/data
 
 bash storagebench.sh --help
+
+# Reformat an existing run (also works with v2.0/v2.1 results)
+bash storagebench.sh --show-results /root/storagebench-results/RUN_DIRECTORY
+
+# Plain output without terminal colour
+bash storagebench.sh --directory /mnt/data --no-color
 ```
 
 | Target | How it is tested |
@@ -87,12 +93,17 @@ Each job shares a single initialized file/region; four jobs do not require four 
 
 Every run creates a private, uniquely named folder in `./storagebench-results`:
 
+- `summary.txt`: readable table with automatically scaled units, also shown in the terminal.
 - `summary.tsv`: throughput in MiB/s, IOPS, mean completion latency in microseconds, and mean fsync latency (zero when not applicable).
 - `results.json`: metadata and all fio test reports, including fio latency percentiles.
 - `metadata.json`: version, kernel, profile, target and timestamp.
 - Individual test `.json` reports and `.log` diagnostics.
 
 A nonzero exit indicates failure or interruption; partial logs remain. Results stay local and are never uploaded automatically. Metadata includes the target path; review it before sharing.
+
+The terminal shows a numbered stage for each workload and total elapsed time. Throughput scales from B/s through KiB/s, MiB/s, GiB/s and TiB/s; IOPS uses `k`/`M`; latency scales from ns through us, ms and seconds. These are **bytes per second**, not Mbps (megabits per second). Values are rounded for display only: JSON and TSV retain the original precision. Fsync shows `-` for workloads where it is not measured. Colour is automatic on supported terminals and disabled for redirected output, `--no-color`, or the `NO_COLOR` environment variable.
+
+For example, a result of `1600 MiB/s` appears as `1.56 GiB/s`, and `3963.23 us` appears as `3.96 ms`. Use `--show-results PATH` to display older saved TSV results in the new format without running fio or modifying the saved files.
 
 ## Scope and precautions
 

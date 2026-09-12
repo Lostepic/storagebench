@@ -2,10 +2,75 @@
 # SPDX-License-Identifier: MIT
 set -Eeuo pipefail
 export LC_ALL=C
-VERSION=2.1.0
+VERSION=2.2.0
 PROFILE=standard TARGET=. DEVICE='' OUTPUT=./storagebench-results
 TESTDIR='' RUN_DIR='' YES=0 INSTALL=0
 TARGET_SET=0 DEVICE_SET=0 PROMPT_OPEN=0
+REPORT='' COLOR=1 C_ACCENT='' C_BOLD='' C_RESET=''
+STEP=0 TOTAL_STEPS=0
+init_style() {
+    if [[ -t 1 && ${TERM:-dumb} != dumb && -z ${NO_COLOR+x} ]] && (( COLOR )); then
+        C_ACCENT=$'\033[36m'; C_BOLD=$'\033[1m'; C_RESET=$'\033[0m'
+    fi
+}
+rule() { printf '  %s\n' '----------------------------------------------------------------------------'; }
+section() { printf '\n  %s%s%s\n' "$C_ACCENT$C_BOLD" "$*" "$C_RESET"; }
+banner() {
+    section "STORAGEBENCH  /  v$VERSION"
+    printf '  Linux storage performance · fio\n'
+    rule
+}
+table_header() {
+    printf '  %-22s %-5s %12s %9s %10s %10s\n' 'WORKLOAD' 'I/O' 'THROUGHPUT' 'IOPS' 'LATENCY' 'FSYNC'
+    rule
+}
+format_rows() {
+    # TSV is deliberately left at full precision; only the presentation is rounded.
+    awk -F '\t' '
+    function bandwidth(mib) {
+        if (mib >= 1048576) return sprintf("%.2f TiB/s", mib / 1048576)
+        if (mib >= 1024) return sprintf("%.2f GiB/s", mib / 1024)
+        if (mib >= 1) return sprintf("%.2f MiB/s", mib)
+        if (mib >= 1 / 1024) return sprintf("%.2f KiB/s", mib * 1024)
+        return sprintf("%.2f B/s", mib * 1048576)
+    }
+    function iops(n) {
+        if (n >= 1000000) return sprintf("%.2fM", n / 1000000)
+        if (n >= 1000) return sprintf("%.2fk", n / 1000)
+        return sprintf("%.0f", n)
+    }
+    function latency(us) {
+        if (us >= 1000000) return sprintf("%.2f s", us / 1000000)
+        if (us >= 1000) return sprintf("%.2f ms", us / 1000)
+        if (us >= 1 || us == 0) return sprintf("%.2f us", us)
+        return sprintf("%.2f ns", us * 1000)
+    }
+    BEGIN {
+        label["seq-write"]="Sequential 1M QD32"
+        label["seq-read"]="Sequential 1M QD32"
+        label["rand-read-qd1"]="Random 4K QD1"
+        label["rand-write-qd1"]="Random 4K QD1"
+        label["rand-read-qd32x4"]="Random 4K QD32 x4"
+        label["rand-write-qd32x4"]="Random 4K QD32 x4"
+        label["mixed-70r30w"]="Mixed 4K 70R/30W"
+        label["fsync-write"]="Sync write 4K QD1"
+    }
+    $1 == "TEST" { next }
+    NF == 6 {
+        name=($1 in label ? label[$1] : $1)
+        sync=($1 == "fsync-write" ? latency($6) : "-")
+        printf "  %-22s %-5s %12s %9s %10s %10s\n", name, $2, bandwidth($3), iops($4), latency($5), sync
+    }'
+}
+render_summary() {
+    table_header
+    format_rows < "$1"
+    rule
+    printf '  Throughput: bytes/second (MiB = 1024 KiB; GiB = 1024 MiB).\n'
+    printf '  IOPS: operations/second; k = 1,000, M = 1,000,000.\n'
+    printf '  Latency: mean I/O completion; fsync: mean sync-call time.\n'
+    printf '  us = microseconds; ms = milliseconds; - = not applicable.\n'
+}
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 usage() {
     cat <<'EOF'
@@ -17,6 +82,8 @@ Usage: bash storagebench.sh [options]
                        extended (8 GiB/60s)
   --output PATH        Results parent directory (default: ./storagebench-results)
   --install-deps       Install fio and jq using apt-get (requires root)
+  --show-results PATH  Display a saved results directory without running tests
+  --no-color           Disable terminal colours (also respects NO_COLOR)
   --yes                Skip the workload confirmation
   --help               Show help
   --version            Show version
@@ -57,7 +124,8 @@ pick_target() {
         targets+=("$path"); modes+=(raw-readonly)
         labels+=("Device: $path [$type, $(numfmt --to=iec "$size"), $fs] — READ ONLY (mounted or unmounted)")
     done < <(jq -c '[.blockdevices[] | recurse(.children[]?) | select(.type != "rom")] | unique_by(.name)[]' <<< "$data")
-    printf '\nWhere should StorageBench run?\n\n'
+    section 'Where should StorageBench run?'
+    printf '\n'
     for i in "${!targets[@]}"; do printf '  %s) %s\n' "$((i + 1))" "${labels[$i]}"; done
     printf '\n  c) Enter a directory manually\n  q) Quit\n\n'
     echo 'OS and mounted filesystem tests write only a temporary file.'
@@ -109,11 +177,22 @@ while (( $# )); do
         --profile) value "$@"; PROFILE=$2; shift 2 ;;
         --yes) YES=1; shift ;;
         --install-deps) INSTALL=1; shift ;;
+        --show-results) value "$@"; REPORT=$2; shift 2 ;;
+        --no-color) COLOR=0; shift ;;
         --help|-h) usage; exit 0 ;;
         --version) echo "$VERSION"; exit 0 ;;
         *) die "Unknown option: $1 (see --help)" ;;
     esac
 done
+init_style
+if [[ -n "$REPORT" ]]; then
+    [[ -f "$REPORT/summary.tsv" ]] || die "No summary.tsv found in $REPORT"
+    banner
+    section 'SAVED RESULTS'
+    render_summary "$REPORT/summary.tsv"
+    printf '\n  Results: %s\n' "$REPORT"
+    exit 0
+fi
 (( ! TARGET_SET || ! DEVICE_SET )) || die 'Choose either --directory or --read-only, not both.'
 (( ! YES || TARGET_SET || DEVICE_SET )) || die '--yes requires an explicit --directory or --read-only target.'
 case "$PROFILE" in
@@ -123,13 +202,14 @@ case "$PROFILE" in
     *) die "Unknown profile: $PROFILE" ;;
 esac
 [[ $(uname -s) == Linux ]] || die 'Linux is required.'
+banner
 if (( INSTALL )); then
     (( EUID == 0 )) || die '--install-deps requires root.'
     command -v apt-get >/dev/null || die 'Install fio and jq with your distribution package manager.'
     apt-get update
     DEBIAN_FRONTEND=noninteractive apt-get install -y fio jq
 fi
-for cmd in fio jq findmnt lsblk numfmt blockdev df mktemp realpath; do
+for cmd in fio jq findmnt lsblk numfmt blockdev df mktemp realpath awk; do
     command -v "$cmd" >/dev/null || die "Missing $cmd. On Debian/Ubuntu: sudo apt-get install fio jq util-linux coreutils"
 done
 [[ $(fio --version) == fio-* ]] || die 'fio must be the Flexible I/O Tester, not the Fiona CLI.'
@@ -152,8 +232,9 @@ else
     AVAILABLE=$(df -B1 --output=avail -- "$TARGET" | tail -n 1)
     (( AVAILABLE >= SIZE + 1073741824 )) || die "Need at least $((GIB + 1)) GiB free."
 fi
-printf '\nStorageBench %s | %s | %s\n' "$VERSION" "$MODE" "$PROFILE"
-printf 'Target: %s\nTest region: %s GiB | each timed test: %ss\n' "${DEVICE:-$TARGET}" "$GIB" "$RUNTIME"
+section 'BENCHMARK SETUP'
+printf '  %-14s %s\n' 'Target' "${DEVICE:-$TARGET}" 'Mode' "$MODE" 'Profile' "$PROFILE"
+printf '  %-14s %s GiB  /  %ss per timed workload\n' 'Test region' "$GIB" "$RUNTIME"
 if [[ "$MODE" == filesystem ]]; then
     findmnt -T "$TARGET" -o SOURCE,TARGET,FSTYPE
     echo 'This performs sustained writes in a temporary file and can affect other workloads.'
@@ -165,6 +246,9 @@ if (( ! YES )); then
     [[ "$ANSWER" == y || "$ANSWER" == Y ]] || exit 0
 fi
 umask 077
+START_SECONDS=$SECONDS
+TOTAL_STEPS=8
+[[ "$MODE" != raw-readonly ]] || TOTAL_STEPS=3
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -186,7 +270,13 @@ run_fio() {
     shift 5
     local guard=()
     [[ "$MODE" != raw-readonly ]] || guard=(--readonly --allow_file_create=0)
-    printf '\nRunning %s ...\n' "$name"
+    STEP=$((STEP + 1))
+    section "[$STEP/$TOTAL_STEPS] $name"
+    if [[ "$name" == seq-* ]]; then
+        printf '  Running one pass over %s GiB ...\n' "$GIB"
+    else
+        printf '  Running %ss workload ...\n' "$RUNTIME"
+    fi
     fio --name="$name" --filename="$FILE" --size="$SIZE" \
         --rw="$rw" --bs="$bs" --ioengine=libaio --direct=1 \
         --iodepth="$depth" --numjobs="$jobs" --group_reporting=1 \
@@ -199,7 +289,10 @@ run_fio() {
         $job[$direction] | select(.io_bytes > 0) |
         [$name, $direction, (.bw_bytes / 1048576), .iops,
          (.clat_ns.mean / 1000), (($job.sync.lat_ns.mean // 0) / 1000)] | @tsv
-    ' "$RUN_DIR/$name.json" | tee -a "$RUN_DIR/summary.tsv"
+    ' "$RUN_DIR/$name.json" > "$RUN_DIR/$name.tsv"
+    cat "$RUN_DIR/$name.tsv" >> "$RUN_DIR/summary.tsv"
+    table_header
+    format_rows < "$RUN_DIR/$name.tsv"
 }
 if [[ "$MODE" == filesystem ]]; then
     # Fully initialize the same file before reads; avoid sparse/unwritten extents.
@@ -225,9 +318,9 @@ else
     cp -- "$RUN_DIR/read-write-results.json" "$RUN_DIR/results.json"
 fi
 rm -- "$RUN_DIR/read-write-results.json"
-printf '\nCompleted. Results: %s\n\n' "$RUN_DIR"
-if command -v column >/dev/null; then
-    column -t -s $'\t' "$RUN_DIR/summary.tsv"
-else
-    cat "$RUN_DIR/summary.tsv"
-fi
+section 'BENCHMARK COMPLETE'
+ELAPSED=$((SECONDS - START_SECONDS))
+printf '  %s workloads finished in %sm %02ss\n\n' "$TOTAL_STEPS" "$((ELAPSED / 60))" "$((ELAPSED % 60))"
+render_summary "$RUN_DIR/summary.tsv" | tee "$RUN_DIR/summary.txt"
+printf '\n  Results saved to: %s\n' "$RUN_DIR"
+printf '  summary.txt  /  summary.tsv  /  results.json\n\n'
